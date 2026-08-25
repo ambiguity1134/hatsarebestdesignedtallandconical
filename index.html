@@ -42,6 +42,7 @@
             min-width: 300px;
             font-size: 18px;
             line-height: 1.6;
+            overflow-x: auto;
         }
 
         .diatonic-yes {
@@ -50,6 +51,22 @@
 
         .diatonic-no {
             color: red;
+        }
+
+        /* Minimal styling for the table format */
+        table {
+            border-collapse: collapse;
+            white-space: nowrap;
+        }
+
+        th, td {
+            border: 1px solid #999;
+            padding: 8px 15px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #f5f5f5;
         }
     </style>
 </head>
@@ -64,6 +81,7 @@
     <script>
         const intervals = [
             { name: "---", value: "" },
+            { name: "?", value: "?" },
             { name: "P1", value: 0 },
             { name: "m2", value: 1 },
             { name: "M2", value: 2 },
@@ -81,8 +99,7 @@
 
         const intervalNames = ['P1', 'm2', 'M2', 'm3', 'M3', 'P4', 'A4/d5', 'P5', 'm6', 'M6', 'm7', 'M7'];
 
-        // The 7 Major scale modes mapped to our output formats 
-        // (#4 and b5 are mapped to "#4/b5" to match the string replacements below)
+        // The 7 Major scale modes
         const modes = [
             ["1", "2", "3", "4", "5", "6", "7", "8"],          // Ionian
             ["1", "2", "b3", "4", "5", "6", "b7", "8"],        // Dorian
@@ -117,16 +134,72 @@
             }
         }
 
+        // Helper function to get an interval name by its numeric value
+        function getIntervalName(val) {
+            const found = intervals.find(i => i.value === val);
+            return found ? found.name : "";
+        }
+
         function calculate() {
             const selects = document.querySelectorAll('.interval-select');
-            let sequence = [];
+            let rawInputs = [];
             
             selects.forEach(select => {
                 if (select.value !== "") {
-                    sequence.push(parseInt(select.value, 10));
+                    rawInputs.push(select.value);
                 }
             });
 
+            const hasQuestionMark = rawInputs.includes("?");
+            
+            // Build arrays of possibilities for each slot
+            const optionsArray = rawInputs.map(val => {
+                if (val === "?") {
+                    return [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+                } else {
+                    return [parseInt(val, 10)];
+                }
+            });
+
+            // Generate all combinations (Cartesian product)
+            let sequences = [[]];
+            if (optionsArray.length > 0) {
+                sequences = optionsArray.reduce((a, b) => a.flatMap(d => b.map(e => [...d, e])), [[]]);
+            }
+
+            const outputBox = document.getElementById('output-box');
+
+            if (hasQuestionMark) {
+                // Table output format
+                let tableHTML = '<table>';
+                tableHTML += '<tr><th>Interval Steps</th><th>From Root</th><th>Scale Degrees</th><th>Diatonic?</th></tr>';
+
+                sequences.forEach(seq => {
+                    let stepsStr = seq.length > 0 ? seq.map(getIntervalName).join(' + ') : "---";
+                    let { out1, out2, diatonicOutput } = processSequence(seq);
+
+                    tableHTML += `<tr>
+                        <td>${stepsStr}</td>
+                        <td>${out1.join(', ')}</td>
+                        <td>${out2.join(' ')}</td>
+                        <td>${diatonicOutput}</td>
+                    </tr>`;
+                });
+
+                tableHTML += '</table>';
+                outputBox.innerHTML = tableHTML;
+
+            } else {
+                // Standard single output format
+                let seq = sequences[0] || [];
+                let { out1, out2, diatonicOutput } = processSequence(seq);
+                
+                outputBox.innerHTML = `${out1.join(', ')}<br>${out2.join(' ')}<br>${diatonicOutput}`;
+            }
+        }
+
+        // Logic isolated to process any single array of numbers
+        function processSequence(sequence) {
             let out1 = ["R"];
             let cumulativeTotal = 0;
 
@@ -146,9 +219,7 @@
                     .replace(/d/g, 'b');
             });
 
-            // Determine if diatonic
             let isDiatonic = false;
-            
             for (let mode of modes) {
                 let isMatch = true;
                 for (let degree of out2) {
@@ -163,15 +234,14 @@
                 }
             }
 
-            // Create Diatonic text output
             let diatonicOutput = isDiatonic 
                 ? 'Diatonic: <span class="diatonic-yes">YES</span>' 
                 : 'Diatonic: <span class="diatonic-no">NO</span>';
 
-            const outputBox = document.getElementById('output-box');
-            outputBox.innerHTML = `${out1.join(', ')}<br>${out2.join(' ')}<br>${diatonicOutput}`;
+            return { out1, out2, diatonicOutput };
         }
 
+        // Initialize display
         calculate();
     </script>
 </body>
