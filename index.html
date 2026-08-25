@@ -78,6 +78,19 @@
         th {
             background-color: #f5f5f5;
         }
+
+        button.play-btn {
+            font-family: 'Ubuntu Mono', monospace;
+            cursor: pointer;
+            padding: 4px 10px;
+            background-color: #eee;
+            border: 1px solid #999;
+            border-radius: 4px;
+        }
+
+        button.play-btn:hover {
+            background-color: #ddd;
+        }
     </style>
 </head>
 <body>
@@ -96,6 +109,10 @@
     <div id="output-box"></div>
 
     <script>
+        // Set up the Web Audio Context for playing MIDI notes
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        let audioCtx;
+
         const intervals = [
             { name: "---", value: "" },
             { name: "?", value: "?" },
@@ -198,13 +215,13 @@
             if (hasQuestionMark) {
                 // Table output format
                 let tableHTML = '<table>';
-                tableHTML += '<tr><th>Interval Steps</th><th>From Root</th><th>Scale Degrees</th><th>Diatonic?</th></tr>';
+                tableHTML += '<tr><th>Interval Steps</th><th>From Root</th><th>Scale Degrees</th><th>Diatonic?</th><th>Audio</th></tr>';
 
                 sequences.forEach(seq => {
                     let stepsStr = seq.length > 0 ? seq.map(getIntervalName).join(' + ') : "---";
                     
-                    // Added isDiatonic to the destructured return
-                    let { out1, out2, diatonicOutput, isDiatonic } = processSequence(seq);
+                    // Added semitonesArray to easily map to MIDI pitches
+                    let { out1, out2, diatonicOutput, isDiatonic, semitonesArray } = processSequence(seq);
 
                     // Skip rendering this row if it's non-diatonic and the checkbox is unchecked
                     if (!showNonDiatonic && !isDiatonic) {
@@ -216,6 +233,7 @@
                         <td>${out1.join(', ')}</td>
                         <td>${out2.join(' ')}</td>
                         <td>${diatonicOutput}</td>
+                        <td><button class="play-btn" onclick="playAudioSequence([${semitonesArray.join(',')}])">Play Audio</button></td>
                     </tr>`;
                 });
 
@@ -225,9 +243,10 @@
             } else {
                 // Standard single output format
                 let seq = sequences[0] || [];
-                let { out1, out2, diatonicOutput } = processSequence(seq);
+                let { out1, out2, diatonicOutput, semitonesArray } = processSequence(seq);
                 
-                outputBox.innerHTML = `${out1.join(', ')}<br>${out2.join(' ')}<br>${diatonicOutput}`;
+                outputBox.innerHTML = `${out1.join(', ')}<br>${out2.join(' ')}<br>${diatonicOutput}<br><br>
+                                       <button class="play-btn" onclick="playAudioSequence([${semitonesArray.join(',')}])">Play Audio</button>`;
             }
         }
 
@@ -235,9 +254,12 @@
         function processSequence(sequence) {
             let out1 = ["R"];
             let cumulativeTotal = 0;
+            let semitonesArray = [0]; // Starting at Root (0 semitones)
 
             for (let num of sequence) {
                 cumulativeTotal += num;
+                semitonesArray.push(cumulativeTotal);
+                
                 let intervalName = (cumulativeTotal === 12) ? "P8" : intervalNames[cumulativeTotal % 12];
                 out1.push(intervalName);
             }
@@ -271,8 +293,76 @@
                 ? 'Diatonic: <span class="diatonic-yes">YES</span>' 
                 : 'Diatonic: <span class="diatonic-no">NO</span>';
 
-            // Also return the raw isDiatonic boolean for filtering
-            return { out1, out2, diatonicOutput, isDiatonic };
+            return { out1, out2, diatonicOutput, isDiatonic, semitonesArray };
+        }
+
+        // --- Web Audio API MIDI Synthesizer ---
+        function playAudioSequence(semitoneOffsets) {
+            if (!audioCtx) {
+                audioCtx = new AudioContext();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+
+            const bpm = 120;
+            const beatDuration = 60 / bpm; // 0.5s per quarter note
+            const eighthNote = beatDuration / 2; // 0.25s
+            const quarterNote = beatDuration; // 0.5s
+            const wholeNote = beatDuration * 4; // 2.0s
+
+            let startTime = audioCtx.currentTime + 0.1; // Small buffer to ensure clean start
+            let timeCursor = 0;
+
+            // 1. Arpeggiate Up
+            let arpSequence = [];
+            for (let i = 0; i < semitoneOffsets.length; i++) {
+                arpSequence.push(semitoneOffsets[i]);
+            }
+            // 2. Arpeggiate Down (avoiding repeating the top note)
+            for (let i = semitoneOffsets.length - 2; i >= 0; i--) {
+                arpSequence.push(semitoneOffsets[i]);
+            }
+
+            // Schedule the arpeggio (each as an eighth note)
+            arpSequence.forEach(semitone => {
+                playOscillatorNote(60 + semitone, startTime + timeCursor, eighthNote);
+                timeCursor += eighthNote;
+            });
+
+            // 3. Quarter note rest
+            timeCursor += quarterNote;
+
+            // 4. Play all tones simultaneously for a whole note
+            semitoneOffsets.forEach(semitone => {
+                playOscillatorNote(60 + semitone, startTime + timeCursor, wholeNote);
+            });
+        }
+
+        // Helper to convert MIDI number to frequency and play an oscillator
+        function playOscillatorNote(midiNumber, noteStart, noteDuration) {
+            const frequency = 440 * Math.pow(2, (midiNumber - 69) / 12);
+            
+            const osc = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+
+            osc.type = 'triangle'; // Smoother tone for chords than standard sine/square
+            osc.frequency.value = frequency;
+
+            // ADSR Envelope to prevent audio clicks
+            gainNode.gain.setValueAtTime(0, noteStart);
+            // Quick attack
+            gainNode.gain.linearRampToValueAtTime(0.2, noteStart + 0.02);
+            // Hold
+            gainNode.gain.setValueAtTime(0.2, noteStart + noteDuration - 0.05);
+            // Fade out
+            gainNode.gain.linearRampToValueAtTime(0, noteStart + noteDuration);
+
+            osc.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+
+            osc.start(noteStart);
+            osc.stop(noteStart + noteDuration);
         }
 
         // Initialize display
